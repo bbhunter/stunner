@@ -2,6 +2,7 @@ package internal
 
 import (
 	"bytes"
+	"context"
 	"encoding/binary"
 	"fmt"
 	"net"
@@ -25,15 +26,16 @@ func xor(content, key []byte) []byte {
 }
 
 // xorAddr implements the XOR required for the STUN and TURN protocol
-//      0                   1                   2                   3
-//      0 1 2 3 4 5 6 7 8 9 0 1 2 3 4 5 6 7 8 9 0 1 2 3 4 5 6 7 8 9 0 1
-//     +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
-//     |x x x x x x x x|    Family     |         X-Port                |
-//     +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
-//     |                X-Address (Variable)
-//     +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
 //
-//             Figure 6: Format of XOR-MAPPED-ADDRESS Attribute
+//		0                   1                   2                   3
+//		0 1 2 3 4 5 6 7 8 9 0 1 2 3 4 5 6 7 8 9 0 1 2 3 4 5 6 7 8 9 0 1
+//		+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
+//		|x x x x x x x x|    Family     |         X-Port                |
+//		+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
+//		|                X-Address (Variable)
+//		+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
+//
+//	        Figure 6: Format of XOR-MAPPED-ADDRESS Attribute
 func xorAddr(ip netip.Addr, port uint16, transactionID []byte) ([]byte, error) {
 	var family uint16
 	var key []byte
@@ -71,12 +73,30 @@ func xorAddr(ip netip.Addr, port uint16, transactionID []byte) ([]byte, error) {
 	return buf, nil
 }
 
+func ParseMappedAdress(input []byte) (*netip.Addr, uint16, error) {
+	if len(input) < 5 {
+		return nil, 0, fmt.Errorf("invalid buffer length %d, need to be > 4", len(input))
+	}
+	family := input[0:2] // 0x0001 = ipv4, 0x0002 = ipv6
+	if !bytes.Equal(family, []byte{0o0, 0o1}) && !bytes.Equal(family, []byte{0o0, 0o2}) {
+		return nil, 0, fmt.Errorf("invalid family %02x", family)
+	}
+	portRaw := input[2:4]
+	payload := input[4:]
+	portInt := binary.BigEndian.Uint16(portRaw)
+	ip, ok := netip.AddrFromSlice(payload)
+	if !ok {
+		return nil, 0, fmt.Errorf("invalid IP %02x", payload)
+	}
+	return &ip, portInt, nil
+}
+
 func ConvertXORAddr(input []byte, transactionID string) (string, uint16, error) {
 	if len(input) < 5 {
 		return "", 0, fmt.Errorf("invalid buffer length %d, need to be > 4", len(input))
 	}
 	family := input[0:2] // 0x0001 = ipv4, 0x0002 = ipv6
-	if !bytes.Equal(family, []byte{00, 01}) && !bytes.Equal(family, []byte{00, 02}) {
+	if !bytes.Equal(family, []byte{0o0, 0o1}) && !bytes.Equal(family, []byte{0o0, 0o2}) {
 		return "", 0, fmt.Errorf("invalid family %02x", family)
 	}
 	portRaw := input[2:4]
@@ -102,13 +122,14 @@ func ConvertXORAddr(input []byte, transactionID string) (string, uint16, error) 
 }
 
 // SetupTurnConnection executes the following:
-//   Allocate Unauth (to get realm and nonce)
-//   Allocate Auth
-//	 CreatePermission
+//
+//	Allocate Unauth (to get realm and nonce)
+//	Allocate Auth
+//	CreatePermission
 //
 // it returns the connection, the realm, the nonce and an error
-func SetupTurnConnection(logger DebugLogger, connectProtocol string, turnServer string, useTLS bool, timeout time.Duration, targetHost netip.Addr, targetPort uint16, username, password string) (net.Conn, string, string, error) {
-	remote, err := Connect(connectProtocol, turnServer, useTLS, timeout)
+func SetupTurnConnection(ctx context.Context, logger DebugLogger, connectProtocol string, turnServer string, useTLS bool, timeout time.Duration, targetHost netip.Addr, targetPort uint16, username, password string) (net.Conn, string, string, error) {
+	remote, err := Connect(ctx, connectProtocol, turnServer, useTLS, timeout)
 	if err != nil {
 		return nil, "", "", err
 	}
@@ -119,7 +140,7 @@ func SetupTurnConnection(logger DebugLogger, connectProtocol string, turnServer 
 	}
 
 	allocateRequest := AllocateRequest(RequestedTransportUDP, addressFamily)
-	allocateResponse, err := allocateRequest.SendAndReceive(logger, remote, timeout)
+	allocateResponse, err := allocateRequest.SendAndReceive(ctx, logger, remote, timeout)
 	if err != nil {
 		return nil, "", "", fmt.Errorf("error on sending AllocateRequest: %w", err)
 	}
@@ -131,7 +152,7 @@ func SetupTurnConnection(logger DebugLogger, connectProtocol string, turnServer 
 	nonce := string(allocateResponse.GetAttribute(AttrNonce).Value)
 
 	allocateRequest = AllocateRequestAuth(username, password, nonce, realm, RequestedTransportUDP, addressFamily)
-	allocateResponse, err = allocateRequest.SendAndReceive(logger, remote, timeout)
+	allocateResponse, err = allocateRequest.SendAndReceive(ctx, logger, remote, timeout)
 	if err != nil {
 		return nil, "", "", fmt.Errorf("error on sending AllocateRequest Auth: %w", err)
 	}
@@ -142,7 +163,7 @@ func SetupTurnConnection(logger DebugLogger, connectProtocol string, turnServer 
 	if err != nil {
 		return nil, "", "", fmt.Errorf("error on generating CreatePermissionRequest: %w", err)
 	}
-	permissionResponse, err := permissionRequest.SendAndReceive(logger, remote, timeout)
+	permissionResponse, err := permissionRequest.SendAndReceive(ctx, logger, remote, timeout)
 	if err != nil {
 		return nil, "", "", fmt.Errorf("error on sending CreatePermissionRequest: %w", err)
 	}

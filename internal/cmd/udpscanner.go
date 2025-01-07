@@ -1,6 +1,7 @@
 package cmd
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"math/rand"
@@ -56,7 +57,7 @@ func (opts UDPScannerOpts) Validate() error {
 	return nil
 }
 
-func UDPScanner(opts UDPScannerOpts) error {
+func UDPScanner(ctx context.Context, opts UDPScannerOpts) error {
 	if err := opts.Validate(); err != nil {
 		return err
 	}
@@ -74,10 +75,10 @@ func UDPScanner(opts UDPScannerOpts) error {
 			continue
 		}
 		opts.Log.Debugf("Scanning %s", ip.IP.String())
-		if err := snmpScan(opts, ip.IP, 161, opts.CommunityString); err != nil {
+		if err := snmpScan(ctx, opts, ip.IP, 161, opts.CommunityString); err != nil {
 			opts.Log.Errorf("error on running SNMP Scan for ip %s: %v", ip.IP.String(), err)
 		}
-		if err := dnsScan(opts, ip.IP, 53, opts.DomainName); err != nil {
+		if err := dnsScan(ctx, opts, ip.IP, 53, opts.DomainName); err != nil {
 			opts.Log.Errorf("error on running DNS Scan for ip %s: %v", ip.IP.String(), err)
 		}
 	}
@@ -85,8 +86,8 @@ func UDPScanner(opts UDPScannerOpts) error {
 	return nil
 }
 
-func snmpScan(opts UDPScannerOpts, ip netip.Addr, port uint16, community string) error {
-	remote, realm, nonce, err := internal.SetupTurnConnection(opts.Log, opts.Protocol, opts.TurnServer, opts.UseTLS, opts.Timeout, ip, port, opts.Username, opts.Password)
+func snmpScan(ctx context.Context, opts UDPScannerOpts, ip netip.Addr, port uint16, community string) error {
+	remote, realm, nonce, err := internal.SetupTurnConnection(ctx, opts.Log, opts.Protocol, opts.TurnServer, opts.UseTLS, opts.Timeout, ip, port, opts.Username, opts.Password)
 	if err != nil {
 		// ignore timeouts
 		if errors.Is(err, helper.ErrTimeout) {
@@ -96,13 +97,16 @@ func snmpScan(opts UDPScannerOpts, ip netip.Addr, port uint16, community string)
 	}
 	defer remote.Close()
 
-	channelNumber := helper.RandomChannelNumber()
+	channelNumber, err := helper.RandomChannelNumber()
+	if err != nil {
+		return fmt.Errorf("error on getting random channel number: %w", err)
+	}
 	channelBindRequest, err := internal.ChannelBindRequest(opts.Username, opts.Password, nonce, realm, ip, port, channelNumber)
 	if err != nil {
 		return fmt.Errorf("error on generating ChannelBindRequest: %w", err)
 	}
 
-	channelBindResponse, err := channelBindRequest.SendAndReceive(opts.Log, remote, opts.Timeout)
+	channelBindResponse, err := channelBindRequest.SendAndReceive(ctx, opts.Log, remote, opts.Timeout)
 	if err != nil {
 		return fmt.Errorf("error on sending ChannelBindRequest: %w", err)
 	}
@@ -144,12 +148,12 @@ func snmpScan(opts UDPScannerOpts, ip netip.Addr, port uint16, community string)
 	buf = append(buf, helper.PutUint16(uint16(snmpLen))...)
 	buf = append(buf, snmp...)
 
-	err = helper.ConnectionWrite(remote, buf, opts.Timeout)
+	err = helper.ConnectionWrite(ctx, remote, buf, opts.Timeout)
 	if err != nil {
 		return fmt.Errorf("error on sending SNMP request: %w", err)
 	}
 
-	resp, err := helper.ConnectionRead(remote, opts.Timeout)
+	resp, err := helper.ConnectionReadAll(ctx, remote, opts.Timeout)
 	if err != nil {
 		// ignore timeouts
 		if errors.Is(err, helper.ErrTimeout) {
@@ -169,8 +173,8 @@ func snmpScan(opts UDPScannerOpts, ip netip.Addr, port uint16, community string)
 	return nil
 }
 
-func dnsScan(opts UDPScannerOpts, ip netip.Addr, port uint16, dnsName string) error {
-	remote, realm, nonce, err := internal.SetupTurnConnection(opts.Log, opts.Protocol, opts.TurnServer, opts.UseTLS, opts.Timeout, ip, port, opts.Username, opts.Password)
+func dnsScan(ctx context.Context, opts UDPScannerOpts, ip netip.Addr, port uint16, dnsName string) error {
+	remote, realm, nonce, err := internal.SetupTurnConnection(ctx, opts.Log, opts.Protocol, opts.TurnServer, opts.UseTLS, opts.Timeout, ip, port, opts.Username, opts.Password)
 	if err != nil {
 		// ignore timeouts
 		if errors.Is(err, helper.ErrTimeout) {
@@ -180,13 +184,16 @@ func dnsScan(opts UDPScannerOpts, ip netip.Addr, port uint16, dnsName string) er
 	}
 	defer remote.Close()
 
-	channelNumber := helper.RandomChannelNumber()
+	channelNumber, err := helper.RandomChannelNumber()
+	if err != nil {
+		return fmt.Errorf("error on getting random channel number: %w", err)
+	}
 	channelBindRequest, err := internal.ChannelBindRequest(opts.Username, opts.Password, nonce, realm, ip, port, channelNumber)
 	if err != nil {
 		return fmt.Errorf("error on generating ChannelBindRequest: %w", err)
 	}
 
-	channelBindResponse, err := channelBindRequest.SendAndReceive(opts.Log, remote, opts.Timeout)
+	channelBindResponse, err := channelBindRequest.SendAndReceive(ctx, opts.Log, remote, opts.Timeout)
 	if err != nil {
 		return fmt.Errorf("error on sending ChannelBindRequest: %w", err)
 	}
@@ -233,12 +240,12 @@ func dnsScan(opts UDPScannerOpts, ip netip.Addr, port uint16, dnsName string) er
 	buf = append(buf, helper.PutUint16(uint16(dnsLen))...)
 	buf = append(buf, dns...)
 
-	err = helper.ConnectionWrite(remote, buf, opts.Timeout)
+	err = helper.ConnectionWrite(ctx, remote, buf, opts.Timeout)
 	if err != nil {
 		return fmt.Errorf("error on sending DNS request: %w", err)
 	}
 
-	resp, err := helper.ConnectionRead(remote, opts.Timeout)
+	resp, err := helper.ConnectionReadAll(ctx, remote, opts.Timeout)
 	if err != nil {
 		// ignore timeouts
 		if errors.Is(err, helper.ErrTimeout) {
