@@ -107,7 +107,7 @@ const (
 	ErrorInsufficientCapacity         ErrorCode = 508
 )
 
-var TurnErrorNames = map[ErrorCode]string{ // nolint:exhaustive
+var TurnErrorNames = map[ErrorCode]string{ // nolint:exhaustive, gosec
 	ErrorForbidden:                    "Forbidden",
 	ErrorAllocationMismatch:           "Allocation Mismatch",
 	ErrorWrongCredentials:             "Wrong Credentials",

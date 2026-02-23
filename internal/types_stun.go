@@ -25,7 +25,7 @@ type Stun struct {
 	Header     Header
 	Attributes []Attribute
 	Username   string
-	Password   string
+	Password   string // nolint:gosec
 	Log        DebugLogger
 }
 

@@ -17,7 +17,7 @@ type RangeScanOpts struct {
 	TurnServer string
 	Protocol   string
 	Username   string
-	Password   string
+	Password   string // nolint:gosec
 	UseTLS     bool
 	Timeout    time.Duration
 	Log        *logrus.Logger
